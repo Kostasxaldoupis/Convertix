@@ -1,0 +1,4 @@
+pillow
+pdf2docx
+pandas
+pdf2image
