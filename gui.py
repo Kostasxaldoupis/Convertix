@@ -1,62 +1,202 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
+import customtkinter as ctk
+from tkinter import filedialog
 import subprocess
+import threading
 import sys
 
-def choose_input():
-    file = filedialog.askopenfilename()
-    if file:
-        input_entry.delete(0, tk.END)
-        input_entry.insert(0, file)
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-def choose_output():
-    file = filedialog.asksaveasfilename()
-    if file:
-        output_entry.delete(0, tk.END)
-        output_entry.insert(0, file)
+CONVERSIONS = {
+    "PNG":  ["JPG", "PDF", "WEBP"],
+    "JPG":  ["PNG", "PDF"],
+    "PDF":  ["DOCX"],   
+    "CSV":  ["JSON"],
+}
 
-def convert():
-    input_file = input_entry.get()
-    output_file = output_entry.get()
-
-    if not input_file or not output_file:
-        messagebox.showerror("Error", "Please select input and output files.")
-        return
-
-    try:
-        subprocess.run([sys.executable, "cli.py", input_file, output_file], check=True)
-        messagebox.showinfo("Success", "File converted successfully!")
-    except Exception as e:
-        messagebox.showerror("Error", str(e))
+ACCENT   = "#3B82F6"
+BG_CARD  = "#1E1E2E"
+BG_CHIP  = "#2A2A3D"
+BG_CHIP_ACTIVE = "#3B82F6"
 
 
-root = tk.Tk()
-root.title("File Converter")
-root.geometry("520x200")
-root.resizable(False, False)
+class ConvertixApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Convertix")
+        self.geometry("580x500")
+        self.resizable(False, False)
+        self.configure(fg_color="#13131F")
 
-# Title
-title = tk.Label(root, text="File Converter", font=("Arial", 16, "bold"))
-title.grid(row=0, column=0, columnspan=3, pady=10)
+        self.input_file  = ""
+        self.output_file = ""
+        self.from_fmt    = "PNG"
+        self.to_fmt      = "JPEG"
 
-# Input row
-tk.Label(root, text="Input File:").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self._build_ui()
 
-input_entry = tk.Entry(root, width=40)
-input_entry.grid(row=1, column=1, pady=5)
+    def _build_ui(self):
+        # ── Title ──────────────────────────────────────────────
+        ctk.CTkLabel(
+            self, text="Convertix",
+            font=("Segoe UI", 26, "bold"), text_color="white"
+        ).pack(pady=(28, 4))
 
-tk.Button(root, text="Browse", width=10, command=choose_input).grid(row=1, column=2, padx=10)
+        ctk.CTkLabel(
+            self, text="Fast file conversion",
+            font=("Segoe UI", 12), text_color="#6B7280"
+        ).pack(pady=(0, 18))
 
-# Output row
-tk.Label(root, text="Output File:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        # ── Conversion card ────────────────────────────────────
+        card = ctk.CTkFrame(self, fg_color=BG_CARD, corner_radius=16)
+        card.pack(padx=30, fill="x")
 
-output_entry = tk.Entry(root, width=40)
-output_entry.grid(row=2, column=1, pady=5)
+        ctk.CTkLabel(
+            card, text="FROM", font=("Segoe UI", 10, "bold"),
+            text_color="#6B7280"
+        ).pack(anchor="w", padx=18, pady=(16, 6))
 
-tk.Button(root, text="Save As", width=10, command=choose_output).grid(row=2, column=2, padx=10)
+        self.from_row = ctk.CTkFrame(card, fg_color="transparent")
+        self.from_row.pack(padx=18, fill="x", pady=(0, 14))
+        self._build_chips(self.from_row, list(CONVERSIONS.keys()), self.from_fmt, self._select_from)
 
-# Convert button
-convert_button = tk.Button(root, text="Convert", width=20, height=2, command=convert)
-convert_button.grid(row=3, column=0, columnspan=3, pady=20)
+        ctk.CTkFrame(card, height=1, fg_color="#2D2D42").pack(fill="x", padx=18)
 
-root.mainloop()
+        ctk.CTkLabel(
+            card, text="TO", font=("Segoe UI", 10, "bold"),
+            text_color="#6B7280"
+        ).pack(anchor="w", padx=18, pady=(14, 6))
+
+        self.to_row = ctk.CTkFrame(card, fg_color="transparent")
+        self.to_row.pack(padx=18, fill="x", pady=(0, 16))
+        self._build_chips(self.to_row, CONVERSIONS[self.from_fmt], self.to_fmt, self._select_to)
+
+        # ── File pickers ───────────────────────────────────────
+        picker_frame = ctk.CTkFrame(self, fg_color="transparent")
+        picker_frame.pack(padx=30, pady=14, fill="x")
+        picker_frame.columnconfigure(0, weight=1)
+
+        self._file_row(picker_frame, "Input",  self._choose_input,  0)
+        self._file_row(picker_frame, "Output", self._choose_output, 1)
+
+        # ── Convert button ─────────────────────────────────────
+        self.convert_btn = ctk.CTkButton(
+            self, text="Convert", height=44,
+            font=("Segoe UI", 14, "bold"),
+            fg_color=ACCENT, hover_color="#2563EB",
+            corner_radius=12, command=self._start_conversion
+        )
+        self.convert_btn.pack(padx=30, fill="x")
+
+        self.status_label = ctk.CTkLabel(self, text="", font=("Segoe UI", 12))
+        self.status_label.pack(pady=(10, 0))
+
+    # ── Chip helpers ───────────────────────────────────────────
+    def _build_chips(self, parent, options, active, callback):
+        for w in parent.winfo_children():
+            w.destroy()
+        for opt in options:
+            is_active = opt == active
+            btn = ctk.CTkButton(
+                parent, text=opt, width=64, height=30,
+                font=("Segoe UI", 12, "bold" if is_active else "normal"),
+                fg_color=BG_CHIP_ACTIVE if is_active else BG_CHIP,
+                hover_color="#2563EB" if is_active else "#33334A",
+                corner_radius=8,
+                command=lambda o=opt: callback(o)
+            )
+            btn.pack(side="left", padx=(0, 8))
+
+    def _select_from(self, fmt):
+        self.from_fmt = fmt
+        options = CONVERSIONS[fmt]
+        self.to_fmt = options[0]
+        self._build_chips(self.from_row, list(CONVERSIONS.keys()), self.from_fmt, self._select_from)
+        self._build_chips(self.to_row,   options,                   self.to_fmt,   self._select_to)
+
+    def _select_to(self, fmt):
+        self.to_fmt = fmt
+        self._build_chips(self.to_row, CONVERSIONS[self.from_fmt], self.to_fmt, self._select_to)
+
+    # ── File row helper ────────────────────────────────────────
+    def _file_row(self, parent, label, command, row):
+        ctk.CTkButton(
+            parent, text=f"Select {label}", width=110, height=32,
+            font=("Segoe UI", 12), corner_radius=8,
+            fg_color=BG_CHIP, hover_color="#33334A",
+            command=command
+        ).grid(row=row, column=0, sticky="w", pady=4)
+
+        lbl = ctk.CTkLabel(
+            parent, text="No file selected",
+            font=("Segoe UI", 11), text_color="#6B7280",
+            wraplength=280, anchor="w"
+        )
+        lbl.grid(row=row, column=1, sticky="w", padx=(10, 0))
+
+        if label == "Input":
+            self.input_label = lbl
+        else:
+            self.output_label = lbl
+
+    # ── File picking ───────────────────────────────────────────
+    def _choose_input(self):
+        fmt = self.from_fmt.lower()
+        path = filedialog.askopenfilename(filetypes=[(f"{fmt.upper()} files", f"*.{fmt}")])
+        if path:
+            self.input_file = path
+            self.input_label.configure(text=self._truncate(path), text_color="white")
+
+    def _choose_output(self):
+        fmt = self.to_fmt.lower()
+        path = filedialog.asksaveasfilename(
+            defaultextension=f".{fmt}",
+            filetypes=[(f"{fmt.upper()} files", f"*.{fmt}")]
+        )
+        if path:
+            self.output_file = path
+            self.output_label.configure(text=self._truncate(path), text_color="white")
+
+    # ── Conversion ─────────────────────────────────────────────
+    def _start_conversion(self):
+        if not self.input_file or not self.output_file:
+            self._set_status("Please select both files first.", "red")
+            return
+        self.convert_btn.configure(state="disabled", text="Converting...")
+        self._set_status("", "white")
+        threading.Thread(target=self._run_conversion, daemon=True).start()
+
+    def _run_conversion(self):
+        try:
+            subprocess.run(
+            [sys.executable, "cli.py",
+            self.input_file, self.output_file],
+            )
+            self.after(0, self._on_success)
+        except subprocess.CalledProcessError as e:
+            self.after(0, self._on_failure, e.stderr.strip() or "Unknown error")
+        except Exception as e:
+            self.after(0, self._on_failure, str(e))
+
+    def _on_success(self):
+        self._set_status("✓  Conversion successful!", "#22C55E")
+        self._reset_button()
+
+    def _on_failure(self, msg):
+        self._set_status(f"✕  {msg}", "#EF4444")
+        self._reset_button()
+
+    def _reset_button(self):
+        self.convert_btn.configure(state="normal", text="Convert")
+
+    def _set_status(self, msg, color):
+        self.status_label.configure(text=msg, text_color=color)
+
+    @staticmethod
+    def _truncate(path, max_len=45):
+        return f"...{path[-(max_len - 3):]}" if len(path) > max_len else path
+
+
+if __name__ == "__main__":
+    app = ConvertixApp()
+    app.mainloop()
